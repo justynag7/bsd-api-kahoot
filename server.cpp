@@ -102,6 +102,9 @@ bool validNickname(std::string nickname);
 // displays a nickname list of onilne players
 void displayPlayers();
 
+// sends given questions to the players 
+void askQuestion(Question q);
+
 
 // converts cstring to port
 uint16_t readPort(char * txt);
@@ -140,10 +143,30 @@ int main(int argc, char ** argv){
     if(res) error(1, errno, "listen failed");
 
     
+    // test question
+    Question testQuestion = Question();
+    testQuestion.setQuestion("A is the correct answear.");
+    testQuestion.setA("A");
+    testQuestion.setA("B");
+    testQuestion.setA("C");
+    testQuestion.setA("D");
+    testQuestion.setCorrectAnswear(testQuestion.getA());
     
+
 /****************************/
-    
+
+    // testing askQuestion function
+    std::thread([testQuestion]{
     while(true){
+    if(playersConnected >= 2){
+        askQuestion(testQuestion);
+        break;
+        }
+    }
+    }).detach();
+
+    while(true){
+   
         // prepare placeholders for client address
         sockaddr_in clientAddr{};
         socklen_t clientAddrSize = sizeof(clientAddr);
@@ -164,10 +187,11 @@ int main(int argc, char ** argv){
         // create a new player
         Player p(clientFd);
         players[clientFd] = Player(clientFd);
-        playersConnected ++;
+        //playersConnected ++;
 
-        
         displayPlayers();
+
+
 
 // client threads 
 /******************************/
@@ -211,8 +235,15 @@ void clientLoop(int clientFd, char * buffer){
     setPlayerNickname(clientFd);
     
     while(true){
-        
-        
+
+        memset(buffer,0,255);
+        if(recv(clientFd,buffer,255,MSG_DONTWAIT)){
+            buffer[strlen(buffer)-1] = '\0';
+            printf("Player %s answeared %s",players[clientFd].getNickname().c_str(),buffer);
+        }
+
+        // stop the client from disconecting immediately (test)
+        read(clientFd,buffer,255);
         printf("removing %d\n", clientFd);
         {
                 std::unique_lock<std::mutex> lock(clientFdsLock);
@@ -240,6 +271,7 @@ void setPlayerNickname(int clientFd){
             if(validNickname(buffer) && r <= 16 && r >= 3){
                 players[clientFd].setNickname(buffer);
                 send(clientFd, "Nickname set !\n", 16, MSG_DONTWAIT);
+                playersConnected ++;
                 break;
             }
             else if(r < 3){
@@ -278,4 +310,23 @@ void displayPlayers(){
     for( int i : clientFds){
         printf("%s\n",players[i].getNickname().c_str());
     }
+}
+
+void askQuestion(Question q){
+    int res;
+    std::unique_lock<std::mutex> lock(clientFdsLock);
+    decltype(clientFds) bad;
+    for(int clientFd : clientFds){
+        int count = strlen(q.getQuestion().c_str());
+        printf("Size of question : %d\n", count);
+        res = send(clientFd, q.getQuestion().c_str(), count, MSG_DONTWAIT);
+        if(res!=count)
+            bad.insert(clientFd);
+    }
+    for(int clientFd : bad){
+        printf("removing %d\n", clientFd);
+        clientFds.erase(clientFd);
+        close(clientFd);
+    }
+
 }
