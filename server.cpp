@@ -185,6 +185,7 @@ int main(int argc, char ** argv){
         printf("new connection from: %s:%hu (fd: %d)\n", inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port), clientFd);
         
         // create a new player
+        // we do realize using file descriptors as client IDs is not optimal, this is just a temporary solution
         Player p(clientFd);
         players[clientFd] = Player(clientFd);
         //playersConnected ++;
