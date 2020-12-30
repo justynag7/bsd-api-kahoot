@@ -24,7 +24,7 @@ public:
     Question(){
     }
 
-    // getters
+    // setters
     std::string getQuestion()       {return questionText;}
     std::string getA()              {return answearA;}
     std::string getB()              {return answearB;}
@@ -32,7 +32,7 @@ public:
     std::string getD()              {return answearD;}
     std::string getCorrectAnswear() {return correctAnswear;}
     
-    // setters
+    // getters
     void setQuestion(std::string question)       {questionText = question;}  
     void setA(std::string A)                     {answearA = A;}
     void setB(std::string B)                     {answearB = B;}
@@ -71,7 +71,7 @@ public:
 };
 
 
-// store player info
+// store player info in a form of an array so we can cap the number of online players
 Player players[100];
 
 int playersConnected = 0;
@@ -231,8 +231,8 @@ void ctrl_c(int){
 
 void clientLoop(int clientFd, char * buffer){
     
-    printf("%s has connected to the server\n", players[clientFd].getNickname().c_str());
     setPlayerNickname(clientFd);
+    printf("%s has connected to the server\n", players[clientFd].getNickname().c_str());
     
     while(true){
 
@@ -244,6 +244,7 @@ void clientLoop(int clientFd, char * buffer){
 
         // stop the client from disconecting immediately (test)
         read(clientFd,buffer,255);
+        
         printf("removing %d\n", clientFd);
         {
                 std::unique_lock<std::mutex> lock(clientFdsLock);
