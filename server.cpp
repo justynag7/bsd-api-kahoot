@@ -13,33 +13,13 @@
 #include <signal.h>
 #include <vector>
 #include <set>
+#include <condition_variable>
 
 class Question{
-private:
+public:
     std::string questionText;
     std::string answearA, answearB, answearC, answearD;
     std::string correctAnswear;
-
-public:
-    Question(){
-    }
-
-    // setters
-    std::string getQuestion()       {return questionText;}
-    std::string getA()              {return answearA;}
-    std::string getB()              {return answearB;}
-    std::string getC()              {return answearC;}
-    std::string getD()              {return answearD;}
-    std::string getCorrectAnswear() {return correctAnswear;}
-    
-    // getters
-    void setQuestion(std::string question)       {questionText = question;}  
-    void setA(std::string A)                     {answearA = A;}
-    void setB(std::string B)                     {answearB = B;}
-    void setC(std::string C)                     {answearC = C;}
-    void setD(std::string D)                     {answearD = D;}
-    void setCorrectAnswear(std::string correct)  {correctAnswear = correct;}
-
 };
 
 class Player{
@@ -57,27 +37,27 @@ public:
     Player(){
         nickname = "offline";
     }
-    void AddToScore(int amount)         {score += amount;}
+    void addToScore(int amount)         {score += amount;}
 
-    // setters
     std::string getNickname()           {return nickname;}
     int getScore()                      {return score;}
     int getPlayerID()                   {return playerID;}
 
-    // getters
     void setNickname(std::string nick)  {nickname = nick;}
     void setScore(int scr)              {score = scr;}
     void setPlayerID(int id)            {playerID = id;}
 };
 
 
-// store player info in a form of an array so we can cap the number of online players
+// store player info
 Player players[100];
 
 int playersConnected = 0;
 
 // server socket
 int servFd;
+
+std::condition_variable onlinePlayersCv;
 
 // client sockets
 std::mutex clientFdsLock;
@@ -145,26 +125,28 @@ int main(int argc, char ** argv){
     
     // test question
     Question testQuestion = Question();
-    testQuestion.setQuestion("A is the correct answear.");
-    testQuestion.setA("A");
-    testQuestion.setA("B");
-    testQuestion.setA("C");
-    testQuestion.setA("D");
-    testQuestion.setCorrectAnswear(testQuestion.getA());
+    testQuestion.questionText = "A is the correct answear.";
+    testQuestion.answearA = "A";
+    testQuestion.answearB = "B";
+    testQuestion.answearC = "C";
+    testQuestion.answearD = "D";
+    testQuestion.correctAnswear = testQuestion.answearA;;
     
 
 /****************************/
 
-    // testing askQuestion function
+    
     std::thread([testQuestion]{
-    while(true){
-    if(playersConnected >= 2){
+    std::mutex m;
+    std::unique_lock<std::mutex> ul(m);
+    printf("Question asking thread started.\n");
+    onlinePlayersCv.wait(ul, [] { return (playersConnected >= 2) ? true : false; });
+    printf("Two players logged in, asking the question\n");
         askQuestion(testQuestion);
-        break;
-        }
-    }
     }).detach();
-
+    
+    
+    
     while(true){
    
         // prepare placeholders for client address
@@ -185,7 +167,6 @@ int main(int argc, char ** argv){
         printf("new connection from: %s:%hu (fd: %d)\n", inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port), clientFd);
         
         // create a new player
-        // we do realize using file descriptors as client IDs is not optimal, this is just a temporary solution
         Player p(clientFd);
         players[clientFd] = Player(clientFd);
         //playersConnected ++;
@@ -232,20 +213,20 @@ void ctrl_c(int){
 
 void clientLoop(int clientFd, char * buffer){
     
-    setPlayerNickname(clientFd);
     printf("%s has connected to the server\n", players[clientFd].getNickname().c_str());
+    setPlayerNickname(clientFd);
     
     while(true){
 
         memset(buffer,0,255);
         if(recv(clientFd,buffer,255,MSG_DONTWAIT)){
+            // Swapping '\n' for a null character
             buffer[strlen(buffer)-1] = '\0';
             printf("Player %s answeared %s",players[clientFd].getNickname().c_str(),buffer);
         }
 
         // stop the client from disconecting immediately (test)
         read(clientFd,buffer,255);
-        
         printf("removing %d\n", clientFd);
         {
                 std::unique_lock<std::mutex> lock(clientFdsLock);
@@ -268,12 +249,14 @@ void setPlayerNickname(int clientFd){
     {
         memset(buffer,0,sizeof(buffer));
         if (recv(clientFd,buffer,64,MSG_FASTOPEN) > 0){
+            // Swapping '\n' for a null character
             buffer[strlen(buffer)-1] = '\0';
             int r = strlen(buffer);
             if(validNickname(buffer) && r <= 16 && r >= 3){
                 players[clientFd].setNickname(buffer);
                 send(clientFd, "Nickname set !\n", 16, MSG_DONTWAIT);
                 playersConnected ++;
+                onlinePlayersCv.notify_one();
                 break;
             }
             else if(r < 3){
@@ -319,9 +302,9 @@ void askQuestion(Question q){
     std::unique_lock<std::mutex> lock(clientFdsLock);
     decltype(clientFds) bad;
     for(int clientFd : clientFds){
-        int count = strlen(q.getQuestion().c_str());
+        int count = q.questionText.size();
         printf("Size of question : %d\n", count);
-        res = send(clientFd, q.getQuestion().c_str(), count, MSG_DONTWAIT);
+        res = send(clientFd, q.questionText.c_str(), count, MSG_DONTWAIT);
         if(res!=count)
             bad.insert(clientFd);
     }
