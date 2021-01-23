@@ -126,10 +126,10 @@ int main(int argc, char ** argv){
     // test question
     Question testQuestion = Question();
     testQuestion.questionText = "A is the correct answear.";
-    testQuestion.answearA = "A";
-    testQuestion.answearB = "B";
-    testQuestion.answearC = "C";
-    testQuestion.answearD = "D";
+    testQuestion.answearA = "Answear 1";
+    testQuestion.answearB = "Answear 2";
+    testQuestion.answearC = "Answear 3";
+    testQuestion.answearD = "Answear 4";
     testQuestion.correctAnswear = testQuestion.answearA;;
     
 
@@ -201,7 +201,17 @@ void setReuseAddr(int sock){
 
 void ctrl_c(int){
     std::unique_lock<std::mutex> lock(clientFdsLock);
+    
+    // TEST
+    // Change condition variable so the question asking thread shuts down. 
+    playersConnected = 2;
+    onlinePlayersCv.notify_one();
+    
     for(int clientFd : clientFds){
+        const char* msg = "Server down!\n";
+        if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
+            perror("Server down message error");
+        }
         shutdown(clientFd, SHUT_RDWR);
         close(clientFd);
     }
@@ -219,10 +229,10 @@ void clientLoop(int clientFd, char * buffer){
     while(true){
 
         memset(buffer,0,255);
-        if(recv(clientFd,buffer,255,MSG_DONTWAIT)){
+        if(read(clientFd,buffer,255) > 0){
             // Swapping '\n' for a null character
             buffer[strlen(buffer)-1] = '\0';
-            printf("Player %s answeared %s",players[clientFd].getNickname().c_str(),buffer);
+            printf("Player %s answeared %s\n",players[clientFd].getNickname().c_str(),buffer);
         }
 
         // stop the client from disconecting immediately (test)
@@ -242,32 +252,58 @@ void clientLoop(int clientFd, char * buffer){
 }
 
 void setPlayerNickname(int clientFd){
-    send(clientFd, "Choose your nickname:\n", 23, MSG_DONTWAIT);
+    const char* msg =  "Choose your nickname:\n";
+    if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
+        std::unique_lock<std::mutex> lock(clientFdsLock);
+        perror("Nickname setup message failed");
+        clientFds.erase(clientFd);
+    }
     char buffer[64];
-
+    decltype(clientFds) bad;
     while(true)
     {
         memset(buffer,0,sizeof(buffer));
         if (recv(clientFd,buffer,64,MSG_FASTOPEN) > 0){
             // Swapping '\n' for a null character
+
             buffer[strlen(buffer)-1] = '\0';
             int r = strlen(buffer);
             if(validNickname(buffer) && r <= 16 && r >= 3){
                 players[clientFd].setNickname(buffer);
-                send(clientFd, "Nickname set !\n", 16, MSG_DONTWAIT);
+                const char* msg =  "Nickname set !\n";
+                if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
+                    std::unique_lock<std::mutex> lock(clientFdsLock);
+                    perror("Nickname setup message failed");
+                    clientFds.erase(clientFd);
+                }
                 playersConnected ++;
                 onlinePlayersCv.notify_one();
                 break;
             }
             else if(r < 3){
-                send(clientFd, "Nickname too short ! Try something with at least 3 characters:\n", 64, MSG_DONTWAIT);
+                const char* msg = "Nickname too short ! Try something with at least 3 characters:\n";
+                if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
+                    std::unique_lock<std::mutex> lock(clientFdsLock);
+                    perror("Nickname setup message failed");
+                    clientFds.erase(clientFd);
+                }
             }
             else if(r > 16){
-                send(clientFd, "Nickname too long ! Try something below 16 characters:\n", 56, MSG_DONTWAIT);
+                const char* msg = "Nickname too long ! Try something below 16 characters:\n";
+                if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg)+1){
+                    perror("Nickname setup message failed");
+                    std::unique_lock<std::mutex> lock(clientFdsLock);
+                    clientFds.erase(clientFd);
+                }
             }
             else
             {
-                send(clientFd, "Nickname already taken ! Try something different:\n", 51, MSG_DONTWAIT);
+                const char* msg = "Nickname already taken ! Try something different:\n";
+                if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg)+1){
+                    perror("Nickname setup message failed");
+                    std::unique_lock<std::mutex> lock(clientFdsLock);
+                    clientFds.erase(clientFd);
+                }
             }
         }
 
@@ -302,9 +338,20 @@ void askQuestion(Question q){
     std::unique_lock<std::mutex> lock(clientFdsLock);
     decltype(clientFds) bad;
     for(int clientFd : clientFds){
-        int count = q.questionText.size();
+        char msg[2048] = "\0";
+        strcat(msg,q.questionText.c_str());
+        strcat(msg,"\nA: ");
+        strcat(msg,q.answearA.c_str());
+        strcat(msg,"\nB: ");
+        strcat(msg,q.answearB.c_str());
+        strcat(msg,"\nC: ");
+        strcat(msg,q.answearC.c_str());
+        strcat(msg,"\nD: ");
+        strcat(msg,q.answearD.c_str());
+        strcat(msg,"\n");
+        int count = strlen(msg);
         printf("Size of question : %d\n", count);
-        res = send(clientFd, q.questionText.c_str(), count, MSG_DONTWAIT);
+        res = send(clientFd, msg, count, MSG_DONTWAIT);
         if(res!=count)
             bad.insert(clientFd);
     }
