@@ -91,6 +91,9 @@ void displayPlayers();
 // sends given questions to the players 
 void askQuestion(Question q);
 
+void questionHandler(Question q);
+
+void answearHandler(Question q);
 
 // converts cstring to port
 uint16_t readPort(char * txt);
@@ -141,14 +144,14 @@ int main(int argc, char ** argv){
 
 /****************************/
 
-    
+    /*
     std::thread([testQuestion]{
         std::mutex m;
         std::unique_lock<std::mutex> ul(m);
         onlinePlayersCv.wait(ul, [] { return (playersConnected >= 2) ? true : false; });
         askQuestion(testQuestion);
     }).detach();
-    
+    */
     
     
     while(true){
@@ -213,7 +216,7 @@ void ctrl_c(int){
     controlQuestionsCv.notify_all();
     
     for(int clientFd : clientFds){
-        const char* msg = "Server down!\n";
+        const char* msg = "Server shut down!\n";
         if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
             perror("Server down message error");
         }
@@ -226,7 +229,7 @@ void ctrl_c(int){
 }
 
 
-
+// Client server interface
 void clientLoop(int clientFd, char * buffer){
     
     std::mutex m;
@@ -235,6 +238,78 @@ void clientLoop(int clientFd, char * buffer){
     setPlayerNickname(clientFd);
     
     while(true){
+        char menuMsg[] = "=== \"kahoot\" menu ===\n1.Create a room.\n2.Join a room\n3.Exit\n";
+        if(send(clientFd, menuMsg, strlen(menuMsg)+1, MSG_DONTWAIT) != (int)strlen(menuMsg) + 1){
+        std::unique_lock<std::mutex> lock(clientFdsLock);
+        perror("Send error (menu)");
+        clientFds.erase(clientFd);
+        break;
+        }
+
+        char buffer[255];
+        memset(buffer,0,255);
+        if(read(clientFd,buffer,255) < 0){
+            perror("Read error (menu)");
+            std::unique_lock<std::mutex> lock(clientFdsLock);
+            clientFds.erase(clientFd);
+            playersConnected --;
+            break;
+        }
+
+        if(strcmp(buffer,"1\n") == 0){
+            char menuMsg[] = "=== \"kahoot\" menu ===\n1.Create a quiz.\n2.Choose a quiz set\n3.Go back\n";
+            if(send(clientFd, menuMsg, strlen(menuMsg)+1, MSG_DONTWAIT) != (int)strlen(menuMsg) + 1){
+                std::unique_lock<std::mutex> lock(clientFdsLock);
+                perror("Send error (menu)");
+                clientFds.erase(clientFd);
+                break;
+            }
+            if(read(clientFd,buffer,255) < 0){
+                perror("Read error (menu)");
+                std::unique_lock<std::mutex> lock(clientFdsLock);
+                clientFds.erase(clientFd);
+                playersConnected --;
+                break;
+            }
+            if(strcmp(buffer,"1\n") == 0){
+                // createQuiz function
+                strcpy(buffer,"\0");
+                continue; 
+            }
+            if(strcmp(buffer,"2\n") == 0){
+                // browse through quizzes
+                strcpy(buffer,"\0");
+                continue;
+            }
+            if(strcmp(buffer,"3\n") == 0){
+                strcpy(buffer,"\0");
+                continue;
+            }  
+        
+        }
+
+        if(strcmp(buffer,"2\n") == 0){
+            char menuMsg[] = "=== \"kahoot\" menu ===\nPass in lobby id (type 3 to exit):";
+            if(send(clientFd, menuMsg, strlen(menuMsg)+1, MSG_DONTWAIT) != (int)strlen(menuMsg) + 1){
+                std::unique_lock<std::mutex> lock(clientFdsLock);
+                perror("Send error (menu)");
+                clientFds.erase(clientFd);
+                break;
+            }
+            if(read(clientFd,buffer,255) < 0){
+                perror("Read error (menu)");
+                std::unique_lock<std::mutex> lock(clientFdsLock);
+                clientFds.erase(clientFd);
+                playersConnected --;
+                break;
+            } 
+            strcpy(buffer,"\0");
+        }
+
+        if(strcmp(buffer,"3\n") == 0){
+            break;
+        }
+        /*
         printf("Waiting for player to answear a question first...\n");
         std::unique_lock<std::mutex> ul(m);
         controlQuestionsCv.wait(ul,[clientFd] { return (clientFd == notifyFd) ? true : false; });
@@ -266,11 +341,16 @@ void clientLoop(int clientFd, char * buffer){
         shutdown(clientFd, SHUT_RDWR);
         close(clientFd);
         break;
-        
+        */
     }
+    shutdown(clientFd, SHUT_RDWR);
+    close(clientFd);
+    clientFds.erase(clientFd);
     printf("Ending service for client %d\n", clientFd);
 }
 
+// Handles nickname selection
+// FINISHED
 void setPlayerNickname(int clientFd){
     const char* msg1 =  "Choose your nickname:\n";
     if(send(clientFd, msg1, strlen(msg1)+1, MSG_DONTWAIT) != (int)strlen(msg1) + 1){
@@ -338,6 +418,8 @@ void setPlayerNickname(int clientFd){
     }
 }
 
+// setPlayerNickname utility function
+// FINISHED
 bool validNickname(std::string nickname){
     for(int i : clientFds){
         // return false if name is already taken
@@ -348,6 +430,8 @@ bool validNickname(std::string nickname){
     return true;
 }
 
+
+//
 void displayPlayers(){
     printf(" === Players online: %d===\n",playersConnected);
     for( int i : clientFds){
@@ -355,7 +439,16 @@ void displayPlayers(){
     }
 }
 
+
+// Sends questions and possible answears then handles answears from clients
 void askQuestion(Question q){
+        questionHandler(q);
+        answearHandler(q);
+    }
+
+// Send question and possible answears to a group of players
+// FINISHED
+void questionHandler(Question q){
     int res;
     std::unique_lock<std::mutex> lock(clientFdsLock);
     decltype(clientFds) bad;
@@ -382,7 +475,11 @@ void askQuestion(Question q){
         clientFds.erase(clientFd);
         close(clientFd);
     }
-        for(int clientFd : clientFds){
+}
+
+// Collects answears from a group of players
+void answearHandler(Question q){
+    for(int clientFd : clientFds){
         std::thread([clientFd,q]{
             printf("Question answearing thread started for player %d",clientFd);
             char buff[32] = "\0";
@@ -394,9 +491,8 @@ void askQuestion(Question q){
                 close(clientFd);
             }
 
-            //if(strcpy(buffer,q.correctAnswear))
             buff[strlen(buff)-1] = '\0';
-            printf("Question: %s\n",q.correctAnswear.c_str());
+            printf("The answear is: %s\n",q.correctAnswear.c_str());
             printf("Player %s gave an answear (%s)\n",players[clientFd].getNickname().c_str(),buff);
             if(strcmp(buff,q.correctAnswear.c_str()) == 0)
                 printf("Player %s answeared correctly\n",players[clientFd].getNickname().c_str());
@@ -407,5 +503,4 @@ void askQuestion(Question q){
             controlQuestionsCv.notify_all();
         }).detach();   
     }
-    }
-
+}
