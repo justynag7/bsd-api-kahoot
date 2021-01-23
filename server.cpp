@@ -50,6 +50,7 @@ public:
 
 
 // store player info
+// TODO: use int -> Player map instead
 Player players[100];
 
 int playersConnected = 0;
@@ -58,6 +59,11 @@ int playersConnected = 0;
 int servFd;
 
 std::condition_variable onlinePlayersCv;
+
+std::condition_variable controlQuestionsCv;
+
+// determines which controlQuestionsCv to notify
+int notifyFd = 0;
 
 // client sockets
 std::mutex clientFdsLock;
@@ -130,18 +136,16 @@ int main(int argc, char ** argv){
     testQuestion.answearB = "Answear 2";
     testQuestion.answearC = "Answear 3";
     testQuestion.answearD = "Answear 4";
-    testQuestion.correctAnswear = testQuestion.answearA;;
+    testQuestion.correctAnswear = "A";
     
 
 /****************************/
 
     
     std::thread([testQuestion]{
-    std::mutex m;
-    std::unique_lock<std::mutex> ul(m);
-    printf("Question asking thread started.\n");
-    onlinePlayersCv.wait(ul, [] { return (playersConnected >= 2) ? true : false; });
-    printf("Two players logged in, asking the question\n");
+        std::mutex m;
+        std::unique_lock<std::mutex> ul(m);
+        onlinePlayersCv.wait(ul, [] { return (playersConnected >= 2) ? true : false; });
         askQuestion(testQuestion);
     }).detach();
     
@@ -206,6 +210,7 @@ void ctrl_c(int){
     // Change condition variable so the question asking thread shuts down. 
     playersConnected = 2;
     onlinePlayersCv.notify_one();
+    controlQuestionsCv.notify_all();
     
     for(int clientFd : clientFds){
         const char* msg = "Server down!\n";
@@ -221,28 +226,43 @@ void ctrl_c(int){
 }
 
 
+
 void clientLoop(int clientFd, char * buffer){
     
+    std::mutex m;
+
     printf("%s has connected to the server\n", players[clientFd].getNickname().c_str());
     setPlayerNickname(clientFd);
     
     while(true){
-
+        printf("Waiting for player to answear a question first...\n");
+        std::unique_lock<std::mutex> ul(m);
+        controlQuestionsCv.wait(ul,[clientFd] { return (clientFd == notifyFd) ? true : false; });
+        printf("Continuing...\n");
+        
         memset(buffer,0,255);
-        if(read(clientFd,buffer,255) > 0){
-            // Swapping '\n' for a null character
-            buffer[strlen(buffer)-1] = '\0';
-            printf("Player %s answeared %s\n",players[clientFd].getNickname().c_str(),buffer);
+        if(read(clientFd,buffer,255) < 0){
+            perror("Read error");
+            std::unique_lock<std::mutex> lock(clientFdsLock);
+            clientFds.erase(clientFd);
+            playersConnected --;
+            break;
         }
 
+        // Swapping '\n' for a null character
+        buffer[strlen(buffer)-1] = '\0';
+        printf("Player %s answeared %s\n",players[clientFd].getNickname().c_str(),buffer);
+
         // stop the client from disconecting immediately (test)
-        read(clientFd,buffer,255);
+        if(read(clientFd,buffer,255) < 0){
+            perror("Read error");
+        }
         printf("removing %d\n", clientFd);
         {
                 std::unique_lock<std::mutex> lock(clientFdsLock);
                 clientFds.erase(clientFd);
                 playersConnected --;
-            }
+        }
         shutdown(clientFd, SHUT_RDWR);
         close(clientFd);
         break;
@@ -252,10 +272,10 @@ void clientLoop(int clientFd, char * buffer){
 }
 
 void setPlayerNickname(int clientFd){
-    const char* msg =  "Choose your nickname:\n";
-    if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
+    const char* msg1 =  "Choose your nickname:\n";
+    if(send(clientFd, msg1, strlen(msg1)+1, MSG_DONTWAIT) != (int)strlen(msg1) + 1){
         std::unique_lock<std::mutex> lock(clientFdsLock);
-        perror("Nickname setup message failed");
+        perror("Choose your nickname setup message failed");
         clientFds.erase(clientFd);
     }
     char buffer[64];
@@ -263,7 +283,9 @@ void setPlayerNickname(int clientFd){
     while(true)
     {
         memset(buffer,0,sizeof(buffer));
+        // TODO: deal with buffer overflow
         if (recv(clientFd,buffer,64,MSG_FASTOPEN) > 0){
+            printf("Message recieved: %s\nMessage size: %ld",buffer,strlen(buffer));
             // Swapping '\n' for a null character
 
             buffer[strlen(buffer)-1] = '\0';
@@ -273,7 +295,7 @@ void setPlayerNickname(int clientFd){
                 const char* msg =  "Nickname set !\n";
                 if(send(clientFd, msg, strlen(msg)+1, MSG_DONTWAIT) != (int)strlen(msg) + 1){
                     std::unique_lock<std::mutex> lock(clientFdsLock);
-                    perror("Nickname setup message failed");
+                    perror("Nickname set message failed");
                     clientFds.erase(clientFd);
                 }
                 playersConnected ++;
@@ -360,5 +382,30 @@ void askQuestion(Question q){
         clientFds.erase(clientFd);
         close(clientFd);
     }
+        for(int clientFd : clientFds){
+        std::thread([clientFd,q]{
+            printf("Question answearing thread started for player %d",clientFd);
+            char buff[32] = "\0";
+            int count = read(clientFd,buff,32);
+            if (count < 0){
+                perror("read error, line 379");
+                printf("removing %d\n", clientFd);
+                clientFds.erase(clientFd);
+                close(clientFd);
+            }
 
-}
+            //if(strcpy(buffer,q.correctAnswear))
+            buff[strlen(buff)-1] = '\0';
+            printf("Question: %s\n",q.correctAnswear.c_str());
+            printf("Player %s gave an answear (%s)\n",players[clientFd].getNickname().c_str(),buff);
+            if(strcmp(buff,q.correctAnswear.c_str()) == 0)
+                printf("Player %s answeared correctly\n",players[clientFd].getNickname().c_str());
+            else
+                printf("Player %s gave a wrong answear\n",players[clientFd].getNickname().c_str());
+            printf("Question answearing thread ended for player %d",clientFd);
+            notifyFd = clientFd;
+            controlQuestionsCv.notify_all();
+        }).detach();   
+    }
+    }
+
